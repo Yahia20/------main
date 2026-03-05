@@ -37,7 +37,6 @@ class CashierPage(tk.Frame):
         main_container.grid_columnconfigure(1, weight=1) 
         main_container.grid_rowconfigure(0, weight=1)
 
-        # --- السلة ---
         left_wrapper = tk.Frame(main_container, bg=COLOR_PANEL)
         left_wrapper.grid(row=0, column=0, sticky="nsew", padx=(0,10))
 
@@ -99,7 +98,6 @@ class CashierPage(tk.Frame):
         self.ent_reprint_id = tk.Entry(reprint_f, width=15, justify="center"); self.ent_reprint_id.pack(pady=5)
         tk.Button(reprint_f, text="طباعة", bg="#34495e", fg="white", command=self.action_reprint).pack()
 
-        # --- البحث والأدوات ---
         right_panel = tk.Frame(main_container, bg=COLOR_PANEL, relief="flat")
         right_panel.grid(row=0, column=1, sticky="nsew", padx=(10,0))
         
@@ -146,7 +144,7 @@ class CashierPage(tk.Frame):
 
     def update_cash_display(self):
         total = self.controller.db.get_session_total_sales(self.active_session_id)
-        self.lbl_cash_drawer.config(text=f"إجمالي مبيعات اليوم: {total:,.2f} ج.م")
+        self.lbl_cash_drawer.config(text=f"الخزنة الآن: {total:,.2f} ج.م")
 
     def enable_sales_ui(self, enable=True):
         state = "normal" if enable else "disabled"
@@ -249,8 +247,6 @@ class CashierPage(tk.Frame):
             for i in items:
                 qty = i[2]
                 name = i[1]
-                
-                # إضافة كلمة مرتجع للمنتجات المرتجعة لتوضيحها في الفاتورة
                 if qty < 0:
                     name = f"(مرتجع) {name}"
                     
@@ -263,11 +259,9 @@ class CashierPage(tk.Frame):
                     "model_code": i[4] if len(i) > 4 else "---"
                 })
             
-            # حفظ السلة الأصلية واسم العميل الموجود حالياً في الواجهة للرجوع إليهم
             old_cart = self.cart
             old_name = self.ent_name.get()
             
-            # تعيين البيانات مؤقتاً للطباعة بشكل صحيح
             self.cart = temp_cart
             self.ent_name.delete(0, tk.END)
             if len(bill) > 6 and bill[6]:
@@ -275,10 +269,8 @@ class CashierPage(tk.Frame):
                 
             discount_val = bill[8] if len(bill) > 8 else 0
             
-            # طباعة الفاتورة
             print_receipt(self, bill[0], bill[1], bill[2], bill[3], bill[4], discount=discount_val)
             
-            # استرجاع البيانات الأصلية للكاشير بعد الطباعة
             self.cart = old_cart
             self.ent_name.delete(0, tk.END)
             self.ent_name.insert(0, old_name)
@@ -288,7 +280,7 @@ class CashierPage(tk.Frame):
             messagebox.showerror("خطأ", "رقم فاتورة غير موجود")
 
     # =========================================================================
-    # نافذة المرتجع والاستبدال الشاملة
+    # نافذة المرتجع والاستبدال (الذكية)
     # =========================================================================
     def open_refund_exchange_window(self):
         win = tk.Toplevel(self)
@@ -322,11 +314,11 @@ class CashierPage(tk.Frame):
         work_f.grid_columnconfigure(1, weight=1)
 
         # اليمين: المرتجعات
-        right_panel = tk.LabelFrame(work_f, text="القطع المرتجعة (من العميل)", font=("Arial", 12, "bold"), bg="white")
+        right_panel = tk.LabelFrame(work_f, text="القطع القابلة للاسترجاع", font=("Arial", 12, "bold"), bg="white")
         right_panel.grid(row=0, column=1, sticky="nsew", padx=10)
         
-        tree_old = ttk.Treeview(right_panel, columns=("كود", "اسم", "كمية أصلية", "سعر", "الكمية المرتجعة"), show="headings", height=8)
-        for c in ("كود", "اسم", "كمية أصلية", "سعر", "الكمية المرتجعة"): tree_old.heading(c, text=c)
+        tree_old = ttk.Treeview(right_panel, columns=("كود", "اسم", "المتبقي للاسترجاع", "سعر", "الكمية المرتجعة"), show="headings", height=8)
+        for c in ("كود", "اسم", "المتبقي للاسترجاع", "سعر", "الكمية المرتجعة"): tree_old.heading(c, text=c)
         tree_old.pack(fill="both", expand=True, padx=10, pady=10)
 
         def add_to_return():
@@ -419,6 +411,19 @@ class CashierPage(tk.Frame):
             if not bill: 
                 messagebox.showerror("خطأ", "رقم الفاتورة غير صحيح", parent=win)
                 return
+            
+            # --- شرط التأكد من عدم مرور 30 يوماً ---
+            bill_date = datetime.strptime(bill[1], "%Y-%m-%d %H:%M:%S")
+            if (datetime.now() - bill_date).days > 30:
+                messagebox.showerror("مرفوض", "عذراً، لقد مر أكثر من 30 يوماً على هذه الفاتورة. لا يمكن إرجاعها أو استبدالها طبقاً لسياسات المحل.", parent=win)
+                return
+            
+            # --- استخدام الدالة الذكية لجلب القطع المتبقية فقط ---
+            items = self.controller.db.get_returnable_items(bid)
+            if not items:
+                messagebox.showinfo("معلومة", "هذه الفاتورة تم إرجاع جميع منتجاتها مسبقاً ولا يوجد بها قطع قابلة للاسترجاع.", parent=win)
+                return
+
             win.target_bill = bill
             win.cust_phone = bill[5]
             win.cust_name = bill[6]
@@ -427,7 +432,7 @@ class CashierPage(tk.Frame):
             for i in tree_old.get_children(): tree_old.delete(i)
             win.old_cart.clear(); update_totals()
             
-            items = self.controller.db.get_bill_items(bid)
+            # عرض القطع القابلة للإرجاع فقط في الجدول
             for it in items:
                 tree_old.insert("", "end", values=(it[0], it[1], it[2], it[3], 0))
 
@@ -445,13 +450,12 @@ class CashierPage(tk.Frame):
             pay_method = self.payment_var.get()
             
             if messagebox.askyesno("تأكيد", "هل أنت متأكد من تنفيذ هذه العملية؟", parent=win):
+                # نمرر رقم الفاتورة الأصلية لربط المرتجع بها
                 bid, dt = self.controller.db.process_exchange(
-                    win.old_cart, win.new_cart, net, pay_method, win.cust_phone, win.cust_name, self.active_session_id
+                    win.old_cart, win.new_cart, net, pay_method, win.cust_phone, win.cust_name, self.active_session_id, original_bill_id=win.target_bill[0]
                 )
                 
-                # --- إعداد السلة لطباعة فاتورة التبديل/المرتجع فوراً ---
                 temp_cart = []
-                # المنتجات المرتجعة (تضاف بالسالب للطباعة)
                 for item in win.old_cart:
                     temp_cart.append({
                         "id": item["id"],
@@ -460,7 +464,6 @@ class CashierPage(tk.Frame):
                         "price": item['price'],
                         "total": -(item['qty'] * item['price'])
                     })
-                # المنتجات الجديدة
                 for item in win.new_cart:
                     temp_cart.append({
                         "id": item["id"],
@@ -470,25 +473,20 @@ class CashierPage(tk.Frame):
                         "total": item['qty'] * item['price']
                     })
                 
-                # حفظ القيم الحالية للكاشير
                 old_cart = self.cart
                 old_name = self.ent_name.get()
                 
-                # إدخال بيانات التبديل لطباعتها
                 self.cart = temp_cart
                 self.ent_name.delete(0, tk.END)
                 if win.cust_name:
                     self.ent_name.insert(0, win.cust_name)
                 
-                # طباعة الفاتورة تلقائياً كعملية تبديل (أو مرتجع)
                 tr_type = "مرتجع" if not win.new_cart else "تبديل"
                 print_receipt(self, bid, dt, net, pay_method, tr_type, discount=0)
                 
-                # استرجاع القيم الحالية للكاشير
                 self.cart = old_cart
                 self.ent_name.delete(0, tk.END)
                 self.ent_name.insert(0, old_name)
-                # --------------------------------------------------------
                 
                 messagebox.showinfo("نجاح", f"تم تنفيذ العملية بنجاح وتسجيلها برقم {bid} وتم طباعة الفاتورة.", parent=win)
                 self.update_cash_display()
