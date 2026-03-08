@@ -196,10 +196,23 @@ class CashierPage(tk.Frame):
         if not self.selected_product: return
         try:
             qty = qty_override or int(self.ent_qty.get())
+            if qty <= 0:
+                messagebox.showwarning("خطأ", "يجب إدخال كمية صحيحة أكبر من صفر")
+                return
+
             p = self.selected_product
+            available_qty = p[4]
+            
+            qty_in_cart = sum(item['qty'] for item in self.cart if item['id'] == p[0])
+
+            if qty + qty_in_cart > available_qty:
+                messagebox.showerror("نفاد الكمية", f"عذراً، لا يوجد رصيد كافٍ في المخزن!\nالمتاح حالياً: {available_qty} قطعة فقط.")
+                return
+
             self.cart.append({"id": p[0], "name": p[1], "qty": qty, "price": p[3], "total": qty * p[3], "model_code": p[6], "size": p[2]})
             self.update_cart_display()
-        except: messagebox.showerror("خطأ", "الكمية غير صحيحة")
+        except ValueError:
+            messagebox.showerror("خطأ", "الكمية غير صحيحة")
 
     def remove_item(self):
         sel = self.tree_cart.selection()
@@ -227,7 +240,13 @@ class CashierPage(tk.Frame):
         ps = []
         for i in self.cart: ps.extend([i['price']] * i['qty'])
         ps.sort(reverse=True)
-        r, p = {"عرض القطعة والتانية هدية":(2,1), "عرض 2 عليهم 3":(5,3), "عرض 4 عليهم 7":(11,7)}.get(dtype, (0,0))
+        
+        # --- التعديل هنا: تصحيح الكمية المدفوعة في العروض ---
+        # عرض القطعة والتانية هدية: إجمالي القطع 2، العميل يدفع لـ 1
+        # عرض 2 عليهم 3: إجمالي القطع 5، العميل يدفع لـ 2
+        # عرض 4 عليهم 7: إجمالي القطع 11، العميل يدفع لـ 4
+        r, p = {"عرض القطعة والتانية هدية":(2,1), "عرض 2 عليهم 3":(5,2), "عرض 4 عليهم 7":(11,4)}.get(dtype, (0,0))
+        
         if r > 0 and len(ps) == r:
             net = sum(ps[:p]); return net, gross - net
         return gross, 0.0
@@ -236,6 +255,15 @@ class CashierPage(tk.Frame):
         if not self.cart: return
         if not self.validate_customer(): return
         
+        for item in self.cart:
+            db_product = self.controller.db.get_product_by_id(item['id'])
+            if db_product:
+                db_available_qty = db_product[8]
+                cart_qty = sum(x['qty'] for x in self.cart if x['id'] == item['id'])
+                if cart_qty > db_available_qty:
+                    messagebox.showerror("خطأ قبل الدفع", f"المنتج '{item['name']}' لم يعد متوفراً بالكمية المطلوبة.\nالمتاح بالمخزن الآن: {db_available_qty} قطعة.")
+                    return
+
         dtype = self.discount_type.get()
         total_qty = sum(i['qty'] for i in self.cart)
 
@@ -306,9 +334,6 @@ class CashierPage(tk.Frame):
         else: 
             messagebox.showerror("خطأ", "رقم فاتورة غير موجود")
 
-    # =========================================================================
-    # نافذة المرتجع والاستبدال (الذكية الشاملة للعروض)
-    # =========================================================================
     def open_refund_exchange_window(self):
         win = tk.Toplevel(self)
         win.title("نظام المرتجعات والاستبدال الشامل والمستقل")
@@ -400,7 +425,16 @@ class CashierPage(tk.Frame):
             idx = combo_new.current()
             if idx < 0 or idx >= len(ex_results): return
             p = ex_results[idx]
-            qty = simpledialog.askinteger("الكمية", "أدخل الكمية المطلوبة:", minvalue=1, initialvalue=1, parent=win)
+            
+            max_allowed = p[4]
+            qty_already_in_new_cart = sum(x['qty'] for x in win.new_cart if x['id'] == str(p[0]))
+            available_to_add = max_allowed - qty_already_in_new_cart
+            
+            if available_to_add <= 0:
+                messagebox.showerror("نفاد الكمية", "لا يوجد رصيد كافٍ من هذه القطعة في المخزن للاستبدال.", parent=win)
+                return
+
+            qty = simpledialog.askinteger("الكمية", f"أدخل الكمية المطلوبة (المتاح للاستبدال: {available_to_add}):", minvalue=1, maxvalue=available_to_add, initialvalue=1, parent=win)
             if not qty: return
             
             item_total = qty * float(p[3])
@@ -422,7 +456,6 @@ class CashierPage(tk.Frame):
         lbl_net = tk.Label(bottom_f, text="الصافي: 0.00 ج.م", font=("Arial", 18, "bold"), bg="#f39c12", fg="white", padx=20, pady=10)
         lbl_net.pack(side="bottom", pady=20)
 
-        # دالة حساب الصافي المتقدمة للعروض والخصومات
         def update_totals():
             if not win.target_bill: return
             orig_net = float(win.target_bill[2])
@@ -451,7 +484,6 @@ class CashierPage(tk.Frame):
                     win.final_net = 0
                     return
                 
-                # حالة الإرجاع فقط بدون تبديل
                 if not win.new_cart and win.old_cart:
                     if returned_qty == total_orig_qty and total_orig_qty > 0:
                         lbl_total_old.config(text=f"قيمة إرجاع العرض بالكامل: {orig_net:,.2f} ج.م")
@@ -462,7 +494,6 @@ class CashierPage(tk.Frame):
                         lbl_net.config(text="لا يمكن إرجاع أجزاء من العرض بدون استبدال", bg="#e74c3c")
                         win.final_net = None
                 
-                # حالة الاستبدال داخل العرض (حساب السلة الافتراضية)
                 else:
                     returned_dict = {x['id']: x['qty'] for x in win.old_cart}
                     v_prices = []
@@ -472,8 +503,9 @@ class CashierPage(tk.Frame):
                     for x in win.new_cart:
                         v_prices.extend([x['price']] * x['qty'])
                         
+                    # --- التعديل هنا أيضاً: تصحيح الكمية المدفوعة في الاستبدال ---
                     req_qty = {"عرض القطعة والتانية هدية":2, "عرض 2 عليهم 3":5, "عرض 4 عليهم 7":11}.get(win.target_discount_type, 0)
-                    pay_qty = {"عرض القطعة والتانية هدية":1, "عرض 2 عليهم 3":3, "عرض 4 عليهم 7":7}.get(win.target_discount_type, 0)
+                    pay_qty = {"عرض القطعة والتانية هدية":1, "عرض 2 عليهم 3":2, "عرض 4 عليهم 7":4}.get(win.target_discount_type, 0)
                     
                     if len(v_prices) == req_qty:
                         v_prices.sort(reverse=True)
@@ -496,7 +528,6 @@ class CashierPage(tk.Frame):
                         lbl_net.config(text=f"إجمالي القطع المتبقية+الجديدة لا يكمل العرض (مطلوب {req_qty})", bg="#e74c3c")
                         win.final_net = None
             else:
-                # عمليات عادية بدون عروض
                 t_old = sum(x['total'] for x in win.old_cart)
                 t_new = sum(x['total'] for x in win.new_cart)
                 net = t_new - t_old
@@ -563,6 +594,14 @@ class CashierPage(tk.Frame):
             if win.final_net is None:
                 messagebox.showerror("خطأ", "يوجد خطأ في مطابقة شروط العرض أو الخصم. راجع الرسالة التحذيرية بالأسفل.", parent=win)
                 return
+
+            for item in win.new_cart:
+                db_product = self.controller.db.get_product_by_id(item['id'])
+                if db_product:
+                    cart_qty = sum(x['qty'] for x in win.new_cart if x['id'] == item['id'])
+                    if cart_qty > db_product[8]:
+                        messagebox.showerror("خطأ", f"عذراً، المنتج '{item['name']}' لا يوجد منه رصيد كافٍ بالمخزن لإتمام الاستبدال.", parent=win)
+                        return
                 
             pay_method = self.payment_var.get()
             

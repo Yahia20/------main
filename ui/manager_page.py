@@ -75,10 +75,9 @@ class ManagerPage(tk.Frame):
         self.ent_phone_filter.pack(side="left", padx=2)
         self.ent_phone_filter.bind("<Return>", trigger_update)
         
-        # التعديل هنا: تحديث أزرار التصدير
+        # تم مسح زر وإبقاء زر واحد معبر لجميع التقارير
         tk.Button(frm_filter_buttons, text="تحديث التقرير", bg=COLOR_ACCENT, fg="white", font=("Arial",11,"bold"), width=15, command=self.show_report).pack(side="left", padx=15)
-        tk.Button(frm_filter_buttons, text="تصدير فواتير مفصلة (Excel)", bg="#27ae60", fg="white", font=("Arial",11,"bold"), command=lambda: self.open_multi_export_window("فواتير")).pack(side="left", padx=10)
-        tk.Button(frm_filter_buttons, text="تقارير أخرى (Excel)", bg="#8e44ad", fg="white", font=("Arial",11,"bold"), command=lambda: self.open_multi_export_window("اخرى")).pack(side="left", padx=10)       
+        tk.Button(frm_filter_buttons, text="تصدير التقارير (Excel)", bg="#27ae60", fg="white", font=("Arial",11,"bold"), command=lambda: self.open_multi_export_window("فواتير")).pack(side="left", padx=10)
         
         frm_cost = tk.Frame(self.scrollable_report, bg=COLOR_PANEL)
         frm_cost.pack(fill="x", pady=10, padx=20)
@@ -228,12 +227,10 @@ class ManagerPage(tk.Frame):
             import tempfile, os
             temp_dir = tempfile.gettempdir()
             
-            # منع كتابة النص التلقائي الذي يسبب الخطأ
             options = {"write_text": False, "module_height": 7.0, "quiet_zone": 1.0} 
             tmp_barcode_path = os.path.join(temp_dir, f"raw_bar_{product_id}")
             barcode_obj.save(tmp_barcode_path, options=options)
             
-            # --- رسم الباركود المجمع ---
             label_img = Image.new('RGB', (350, 200), color='white')
             draw = ImageDraw.Draw(label_img)
             
@@ -250,14 +247,10 @@ class ManagerPage(tk.Frame):
                 try: return get_display(arabic_reshaper.reshape(str(t)))
                 except: return str(t)
             
-            # رسم السعر
             draw.text((175, 20), f"{price} EGP", fill='black', font=font_lg, anchor="mm")
-            # لصق كود الأعمدة
             raw_barcode = Image.open(f"{tmp_barcode_path}.png").resize((280, 80))
             label_img.paste(raw_barcode, (35, 50))
-            # رسم الكود رقماً
             draw.text((175, 145), str(product_id), fill='black', font=font_bd, anchor="mm")
-            # رسم المقاس واللون
             draw.text((175, 175), ar(f"مقاس: {size} | لون: {color}"), fill='black', font=font_sm, anchor="mm")
             
             final_img_path = os.path.join(temp_dir, f"full_barcode_{product_id}.png")
@@ -451,12 +444,43 @@ class ManagerPage(tk.Frame):
         elif not fr: fr = to
         
         data = self.controller.db.get_sales_report(fr, to, prod_id, phone, model_f, trans_f, pay_f)
-        profit = self.controller.db.get_total_profit(fr, to, prod_id, phone, model_f)
-        var_cost = self.controller.db.get_variable_cost(fr, to, model_f)
         
-        sales = sum(r[1] for r in data if r[3] == "بيع")
-        returns = sum(abs(r[1]) for r in data if r[3] == "مرتجع")
-        exchange = sum(abs(r[1]) for r in data if r[3] == "تبديل")
+        total_net_revenue = 0.0  
+        total_variable_cost = 0.0 
+        sales_val = 0.0
+        returns_val = 0.0
+        exchange_val = 0.0
+        
+        pay_dict = {}
+        trend_dict = {}
+        
+        for row in data:
+            bill_id = row[0]
+            b_date = row[1]
+            b_total = row[2]
+            b_pay = row[3]
+            b_type = row[4]
+            
+            total_net_revenue += b_total
+            
+            if b_type == "بيع":
+                sales_val += b_total
+                pay_dict[b_pay] = pay_dict.get(b_pay, 0) + b_total
+                day = b_date[:10]
+                trend_dict[day] = trend_dict.get(day, 0) + b_total
+            elif b_type == "مرتجع":
+                returns_val += abs(b_total)
+            elif b_type == "تبديل":
+                exchange_val += b_total
+                
+            b_items = self.controller.db.get_bill_items_with_cost(bill_id)
+            for qty, cost in b_items:
+                total_variable_cost += (qty * cost)
+        
+        current_inventory_cost = self.controller.db.get_inventory_total_cost()
+        total_goods_cost = total_variable_cost + current_inventory_cost
+        
+        gross_profit = total_net_revenue - total_variable_cost
         
         try:
             rent = float(self.ent_rent.get() or 0)
@@ -466,33 +490,28 @@ class ManagerPage(tk.Frame):
         except:
             fixed = 0.0
             
-        net_profit = profit - fixed
-        contribution = sales - var_cost
-        break_even = fixed / (contribution / sales) if sales > 0 and contribution > 0 else 0.0
+        # بناء على طلبك: طرح البضاعة الكلية لمعرفة السيولة الحقيقية
+        net_profit = total_net_revenue - total_goods_cost - fixed
         
         customer_info = ""
         if phone:
             cust_name = self.controller.db.get_customer_name(phone)
             customer_info = f"\nاسم العميل: {cust_name} (الهاتف: {phone})\n"
             
-        pay_dict = {}
-        trend_dict = {}
-        for r in data:
-            if r[3] == "بيع":
-                m = r[2]
-                pay_dict[m] = pay_dict.get(m, 0) + r[1]
-                day = r[0][:10]
-                trend_dict[day] = trend_dict.get(day, 0) + r[1]
-            
         stats = f"الفترة: {fr} → {to}{customer_info}\n\n"
-        stats += f"إجمالي المبيعات      : {sales:>12,.2f} ج.م\n"
-        stats += f"إجمالي المرتجعات     : {returns:>12,.2f} ج.م\n"
-        stats += f"إجمالي التبديلات     : {exchange:>12,.2f} ج.م\n"
-        stats += f"الربح الإجمالي       : {profit:>12,.2f} ج.م\n"
-        stats += f"التكلفة المتغيرة     : {var_cost:>12,.2f} ج.م\n"
+        stats += f"إيرادات المبيعات (كاش): {sales_val:>12,.2f} ج.م\n"
+        stats += f"فلوس المرتجع (لعملاء): {-returns_val:>12,.2f} ج.م\n"
+        stats += f"فلوس التبديلات (كاش) : {exchange_val:>12,.2f} ج.م\n"
+        stats += "-"*40 + "\n"
+        stats += f"صافي الإيرادات (بالدرج): {total_net_revenue:>12,.2f} ج.م\n"
+        stats += "-"*40 + "\n"
+        stats += f"سعر البضاعة الكلي    : {total_goods_cost:>12,.2f} ج.م\n"
+        stats += f"سعر البضاعة المباعة  : {total_variable_cost:>12,.2f} ج.م\n"
+        stats += f"سعر البضاعة بالمحل   : {current_inventory_cost:>12,.2f} ج.م\n"
+        stats += "-"*40 + "\n"
+        stats += f"الربح الإجمالي (للفترة): {gross_profit:>12,.2f} ج.م\n"
         stats += f"المصروفات الثابتة   : {fixed:>12,.2f} ج.م\n"
-        stats += f"الربح الصافي         : {net_profit:>12,.2f} ج.م\n"
-        stats += f"نقطة التعادل (Break Even): {break_even:>12,.2f} ج.م\n"
+        stats += f"الربح الصافي (النهائي): {net_profit:>12,.2f} ج.م\n"
         
         self.lbl_stats.config(text=stats)
         for w in self.frm_graph.winfo_children(): w.destroy()
@@ -508,17 +527,17 @@ class ManagerPage(tk.Frame):
             labels_map = {"كاش": "Cash", "فيزا": "Visa", "انستاباي": "Instapay", "فودافون كاش": "Vodafone"}
             eng_labels = [labels_map.get(k, k) for k in pay_dict.keys()]
             axs[0, 0].bar(eng_labels, pay_dict.values(), color=["#3A4032","#D4AF37","#8e44ad","#2980b9"])
-            axs[0, 0].set_title("Sales by Payment Method", fontweight='bold')
+            axs[0, 0].set_title("Net Sales by Payment Method", fontweight='bold')
             axs[0, 0].set_ylabel("Amount (EGP)")
             axs[0, 0].grid(True, axis='y', alpha=0.3)
         else:
             axs[0, 0].axis('off')
             
-        categories = ['Revenue', 'Variable Cost', 'Fixed Cost', 'Net Profit']
-        values = [sales, var_cost, fixed, net_profit]
+        categories = ['Net Revenue', 'Total Goods Cost', 'Fixed Cost', 'Net Profit']
+        values = [total_net_revenue, total_goods_cost, fixed, net_profit]
         colors = ['#27ae60', '#e67e22', '#c0392b', '#2980b9']
         axs[0, 1].barh(categories, values, color=colors)
-        axs[0, 1].set_title("Break Even Analysis", fontweight='bold')
+        axs[0, 1].set_title("Financial Breakdown", fontweight='bold')
         axs[0, 1].grid(True, axis='x', alpha=0.3)
         
         if trend_dict:
@@ -531,9 +550,9 @@ class ManagerPage(tk.Frame):
         else:
             axs[1, 0].axis('off')
 
-        sales_count = len([r for r in data if r[3] == "بيع"])
-        returns_count = len([r for r in data if r[3] == "مرتجع"])
-        exchange_count = len([r for r in data if r[3] == "تبديل"])
+        sales_count = len([r for r in data if r[4] == "بيع"])
+        returns_count = len([r for r in data if r[4] == "مرتجع"])
+        exchange_count = len([r for r in data if r[4] == "تبديل"])
 
         trans_types = {"Sales": sales_count, "Returns": returns_count, "Exchanges": exchange_count}
         trans_types = {k: v for k, v in trans_types.items() if v > 0}
@@ -601,7 +620,7 @@ class ManagerPage(tk.Frame):
         
         report_type_var = tk.StringVar(value=mode)
         types = [
-            ("تصدير فواتير مفصلة", "فواتير"), ("ملفات العملاء", "عملاء"), 
+            ("تصدير فواتير مفصلة", "فواتير"), ("ملفات العملاء (مفصلة)", "عملاء"), 
             ("سجل الأيام المغلقة", "ايام"), ("إدارة الموردين", "موردين"), 
             ("حالة المخزون (الكل)", "مخزون"), ("ناقص جداً (الموديلات)", "نواقص")
         ]
@@ -639,11 +658,23 @@ class ManagerPage(tk.Frame):
             elif rep_type == "ايام":
                 cols = ["رقم الجلسة", "بداية الجلسة", "نهاية الجلسة", "عدد الفواتير", "إجمالي المبيعات"]
                 data = self.controller.db.get_closed_days()
-                # يمكن تصفيتها جدولياً هنا إذا لزم، لكن يتم إرجاع الكل للتبسيط
                 
             elif rep_type == "عملاء":
-                cols = ["رقم الهاتف", "الاسم", "إجمالي المشتريات", "تاريخ آخر زيارة", "آخر صنف تم شراؤه"]
-                data = self.controller.db.get_all_customers_report()
+                cols = ["رقم الهاتف", "الاسم", "تاريخ العملية", "رقم الفاتورة", "كود المنتج", "اسم المنتج", "الكمية", "سعر القطعة", "إجمالي الفاتورة", "طريقة الدفع", "نوع العملية"]
+                all_customers = self.controller.db.get_all_customers_report()
+                for c in all_customers:
+                    phone = c[0]
+                    name = c[1]
+                    transactions = self.controller.db.get_customer_transactions(phone)
+                    for tr in transactions:
+                        bill_id, date, total, pay_method, t_type = tr
+                        items = self.controller.db.get_bill_items(bill_id)
+                        for it in items:
+                            product_id = it[0]
+                            product_name = it[1]
+                            qty = it[2]
+                            price = it[3]
+                            data.append([phone, name, date, bill_id, product_id, product_name, qty, price, total, pay_method, t_type])
                 
             elif rep_type == "موردين":
                 cols = ["ID", "اسم المورد", "اسم الشحنة", "المدفوع", "الآجل", "الإجمالي"]
@@ -771,9 +802,67 @@ class ManagerPage(tk.Frame):
 
     def edit_supplier(self):
         sel = self.tree_sup.selection()
-        if not sel: return
-        sid = self.tree_sup.item(sel[0])['values'][0]
-        messagebox.showinfo("تعديل", "يمكن تعديل الصف من خلال قاعدة البيانات مباشرة أو توسيع النظام")
+        if not sel:
+            messagebox.showwarning("تنبيه", "يرجى تحديد شحنة/مورد أولاً للتعديل")
+            return
+            
+        # جلب البيانات الحالية للصف المحدد
+        item_values = self.tree_sup.item(sel[0])['values']
+        sid = item_values[0]
+        current_name = item_values[1]
+        current_order = item_values[2]
+        current_paid = item_values[3]
+        current_debt = item_values[4]
+
+        # إنشاء نافذة التعديل
+        win = tk.Toplevel(self)
+        win.title(f"تعديل شحنة المورد: {current_name}")
+        win.geometry("500x380")
+        win.configure(bg=COLOR_BG)
+        win.grab_set()
+
+        tk.Label(win, text="تعديل بيانات الشحنة", font=("Arial", 16, "bold"), bg=COLOR_BG, fg=COLOR_ACCENT).pack(pady=15)
+
+        fields = [
+            ("اسم المورد", current_name),
+            ("اسم الشحنة", current_order),
+            ("المدفوع (ج.م)", current_paid),
+            ("الآجل (ج.م)", current_debt)
+        ]
+        
+        entries = {}
+        for lab, val in fields:
+            frame = tk.Frame(win, bg=COLOR_BG)
+            frame.pack(fill="x", padx=30, pady=8)
+            tk.Label(frame, text=lab + ":", bg=COLOR_BG, fg="white", font=("Arial", 11)).pack(side="left")
+            ent = tk.Entry(frame, width=35, font=("Arial", 11), justify="right")
+            # وضع القيم القديمة داخل الخانات للتعديل عليها
+            if val != "None" and val is not None:
+                ent.insert(0, str(val))
+            ent.pack(side="right")
+            entries[lab] = ent
+
+        def save_edits():
+            try:
+                new_name = entries["اسم المورد"].get().strip()
+                new_order = entries["اسم الشحنة"].get().strip()
+                new_paid = float(entries["المدفوع (ج.م)"].get() or 0)
+                new_debt = float(entries["الآجل (ج.م)"].get() or 0)
+                
+                # إرسال التعديلات لقاعدة البيانات
+                self.controller.db.update_supplier(sid, new_name, new_order, new_paid, new_debt)
+                
+                messagebox.showinfo("تم", "تم حفظ التعديلات بنجاح", parent=win)
+                win.destroy()
+                self.load_suppliers() # تحديث الجدول فوراً
+                
+            except ValueError:
+                messagebox.showerror("خطأ", "تأكد من إدخال أرقام صحيحة في خانات (المدفوع والآجل)", parent=win)
+            except Exception as e:
+                messagebox.showerror("خطأ", str(e), parent=win)
+
+        tk.Button(win, text="حفظ التعديلات", font=("Arial", 13, "bold"), bg=COLOR_ACCENT, fg=COLOR_BG, width=20, command=save_edits).pack(pady=25)
+
 
     def delete_supplier(self):
         sel = self.tree_sup.selection()
@@ -782,7 +871,6 @@ class ManagerPage(tk.Frame):
         if messagebox.askyesno("حذف", f"حذف الشحنة رقم {sid}؟"):
             self.controller.db.delete_supplier(sid)
             self.load_suppliers()
-
 
     def open_add_product_window(self, product=None):
         win = tk.Toplevel(self)
@@ -795,7 +883,7 @@ class ManagerPage(tk.Frame):
         upper.pack(fill="x", padx=20, pady=10)
         model_fields = [
             ("اسم المنتج", tk.Entry), ("كود الموديل", tk.Entry), ("النوع", tk.Entry),
-            ("سعر البيع (للموديل كله)", tk.Entry), ("سعر التكلفة (للموديل كله)", tk.Entry), ("اسم المورد", tk.Entry)
+            ("سعر بيع (القطعة الواحدة)", tk.Entry), ("سعر تكلفة (القطعة الواحدة)", tk.Entry), ("اسم المورد", tk.Entry)
         ]
         model_entries = {}
         for i, (lab, wtype) in enumerate(model_fields):
@@ -822,7 +910,6 @@ class ManagerPage(tk.Frame):
             
         added_variants = []
         
-        # --- إضافة إطار للجدول وشريط التمرير ---
         tree_frame = tk.Frame(lower, bg=COLOR_BG)
         tree_var = ttk.Treeview(tree_frame, columns=cols_var, show="headings", height=8)
         scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree_var.yview)
@@ -848,8 +935,8 @@ class ManagerPage(tk.Frame):
                 name = model_entries["اسم المنتج"].get().strip()
                 model_code = model_entries["كود الموديل"].get().strip()
                 typ = model_entries["النوع"].get().strip()
-                price = float(model_entries["سعر البيع (للموديل كله)"].get())
-                cost = float(model_entries["سعر التكلفة (للموديل كله)"].get())
+                price = float(model_entries["سعر بيع (القطعة الواحدة)"].get())
+                cost = float(model_entries["سعر تكلفة (القطعة الواحدة)"].get())
                 supplier = model_entries["اسم المورد"].get().strip()
                 
                 if not added_variants:
@@ -867,18 +954,13 @@ class ManagerPage(tk.Frame):
             except Exception as e:
                 messagebox.showerror("خطأ", str(e))
         
-        # 1. وضع زر الحفظ في الأسفل
         tk.Button(lower, text="تم - حفظ كل القطع للموديل", font=("Arial", 14, "bold"), bg=COLOR_SUCCESS, fg="white", width=30, command=finish_model).pack(side="bottom", pady=15)
         
-        # 2. وضع إطار الجدول في المنتصف
         tree_frame.pack(side="top", fill="both", expand=True, padx=10, pady=5)
         
-        # 3. وضع الجدول وشريط التمرير داخل الإطار
         for c in cols_var: tree_var.heading(c, text=c)
         scrollbar.pack(side="right", fill="y")
-        tree_var.pack(side="left", fill="both", expand=True)              
-
-
+        tree_var.pack(side="left", fill="both", expand=True)               
 
     def open_edit_product(self):
         sel = self.tree_low.selection()

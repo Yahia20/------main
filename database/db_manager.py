@@ -159,7 +159,6 @@ class DBManager:
             return False
 
     def get_critical_low_stock(self, search_term=""):
-        # التعديل هنا: الفلترة بناء على مجموع القطع للموديل بالكامل
         base_query = """
             SELECT id, name, qty, supplier, min_limit, model_code 
             FROM products 
@@ -275,15 +274,15 @@ class DBManager:
         self.conn.commit()
         return bill_id, date_str
 
-    def process_exchange(self, old_items, new_items, net_total, method, phone, name, session_id, original_bill_id=None, discount_type="بدون خصم"):
+    # التعديل هنا: تمرير discount_amount بشكل كامل لتدعم الميزة مستقبلاً
+    def process_exchange(self, old_items, new_items, net_total, method, phone, name, session_id, original_bill_id=None, discount_type="بدون خصم", discount_amount=0.0):
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         t_type = "مرتجع" if not new_items else "تبديل"
         
-        # حفظ الفاتورة بالخصم الخاص بها إن وجد
         self.cursor.execute("""
             INSERT INTO sales (date, total, payment_method, transaction_type, customer_phone, customer_name, session_id, original_bill_id, discount_type, discount_amount)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0)
-        """, (date_str, net_total, method, t_type, phone, name, session_id, original_bill_id, discount_type))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (date_str, net_total, method, t_type, phone, name, session_id, original_bill_id, discount_type, discount_amount))
         bill_id = self.cursor.lastrowid
         
         for item in old_items:
@@ -376,7 +375,7 @@ class DBManager:
         return self.cursor.fetchall()
 
     def get_sales_report(self, start_date=None, end_date=None, product_filter=None, phone_filter=None, model_filter=None, trans_filter=None, pay_filter=None):
-        query = "SELECT s.date, s.total, s.payment_method, s.transaction_type, s.customer_phone FROM sales s"
+        query = "SELECT s.bill_id, s.date, s.total, s.payment_method, s.transaction_type, s.customer_phone FROM sales s"
         params = []
         conditions = []
         if start_date and end_date:
@@ -409,7 +408,20 @@ class DBManager:
         self.cursor.execute(query, params)
         return self.cursor.fetchall()
 
-    # --- التقرير المفصل بكل الوقت ---
+    def get_bill_items_with_cost(self, bill_id):
+        self.cursor.execute("""
+            SELECT si.qty, p.cost_price 
+            FROM sale_items si 
+            JOIN products p ON si.product_id = p.id 
+            WHERE si.bill_id = ?
+        """, (bill_id,))
+        return self.cursor.fetchall()
+
+    def get_inventory_total_cost(self):
+        self.cursor.execute("SELECT SUM(qty * cost_price) FROM products")
+        res = self.cursor.fetchone()
+        return res[0] if res and res[0] else 0.0
+
     def get_all_detailed_transactions(self):
         query = """
             SELECT s.bill_id, s.date, s.session_id, s.transaction_type, s.payment_method,
@@ -469,50 +481,6 @@ class DBManager:
         """
         self.cursor.execute(query, sessions)
         return self.cursor.fetchall()
-
-    def get_total_profit(self, start_date=None, end_date=None, product_filter=None, phone_filter=None, model_filter=None):
-        query = """
-            SELECT SUM( (si.price - p.cost_price) * si.qty )
-            FROM sale_items si
-            JOIN products p ON si.product_id = p.id
-            JOIN sales s ON si.bill_id = s.bill_id
-            WHERE s.transaction_type = 'بيع'
-        """
-        params = []
-        if start_date and end_date:
-            query += " AND s.date >= ? AND s.date <= ?"
-            params.extend([f"{start_date} 00:00:00", f"{end_date} 23:59:59"])
-        if product_filter:
-            query += " AND si.product_id = ?"
-            params.append(product_filter)
-        if model_filter and model_filter != "الكل":
-            query += " AND p.model_code = ?"
-            params.append(model_filter)
-        if phone_filter:
-            query += " AND s.customer_phone LIKE ?"
-            params.append(f"%{phone_filter}%")
-        self.cursor.execute(query, params)
-        res = self.cursor.fetchone()[0]
-        return res or 0.0
-
-    def get_variable_cost(self, start_date=None, end_date=None, model_filter=None):
-        query = """
-            SELECT SUM(p.cost_price * si.qty)
-            FROM sale_items si
-            JOIN products p ON si.product_id = p.id
-            JOIN sales s ON si.bill_id = s.bill_id
-            WHERE s.transaction_type = 'بيع'
-        """
-        params = []
-        if start_date and end_date:
-            query += " AND s.date >= ? AND s.date <= ?"
-            params.extend([f"{start_date} 00:00:00", f"{end_date} 23:59:59"])
-        if model_filter and model_filter != "الكل":
-            query += " AND p.model_code = ?"
-            params.append(model_filter)
-        self.cursor.execute(query, params)
-        res = self.cursor.fetchone()[0]
-        return res or 0.0
 
     def get_unique_model_codes(self):
         self.cursor.execute("SELECT DISTINCT model_code FROM products WHERE model_code IS NOT NULL ORDER BY model_code")
