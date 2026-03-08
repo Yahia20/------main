@@ -355,10 +355,11 @@ class DBManager:
         return self.cursor.fetchall()
 
     def get_closed_days(self):
+        # التعديل هنا: جعلنا السيستم يجمع (كل الفواتير) لمعرفة صافي الدرج بدلاً من جمع البيع فقط
         self.cursor.execute("""
             SELECT ds.session_id, ds.start_time, ds.end_time, 
                    COUNT(s.bill_id) as num_bills, 
-                   COALESCE(SUM(CASE WHEN s.transaction_type='بيع' THEN s.total ELSE 0 END), 0) as sales
+                   COALESCE(SUM(s.total), 0) as sales
             FROM daily_sessions ds 
             LEFT JOIN sales s ON s.session_id = ds.session_id
             WHERE ds.status = 'CLOSED'

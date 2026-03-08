@@ -24,6 +24,11 @@ class CashierPage(tk.Frame):
         tk.Button(hdr, text="← خروج", bg="#c0392b", fg="white", font=("Arial",11,"bold"),
                   command=lambda: controller.show_frame("LoginPage")).pack(side="left", padx=15, pady=12)
         
+        # --- زر التحديث الجديد ---
+        tk.Button(hdr, text="🔄 تحديث", bg="#3498db", fg="white", font=("Arial",12,"bold"), 
+                  command=self.action_refresh).pack(side="left", padx=5)
+        # -----------------------
+
         self.btn_start_day = tk.Button(hdr, text="▶ ابدأ اليوم", bg="#27ae60", fg="white", font=("Arial",12,"bold"), command=self.action_start_day)
         self.btn_start_day.pack(side="left", padx=5)
         
@@ -165,6 +170,23 @@ class CashierPage(tk.Frame):
         if messagebox.askyesno("قفل اليوم", f"إجمالي الخزنة المتوقع: {total:,.2f} ج.م\nتأكيد إغلاق الجلسة؟"):
             self.controller.db.end_current_day()
             self.controller.show_frame("LoginPage")
+
+
+    def action_refresh(self):
+        # 1. تحديث الخزنة وحالة الجلسة من قاعدة البيانات
+        self.refresh_data()
+        
+        # 2. تفريغ خانة البحث وتفاصيل المنتج للبدء على نظافة
+        self.search_var.set("")
+        self.combo_search['values'] = []
+        self.selected_product = None
+        self.lbl_item_details.config(text="")
+        
+        # 3. إرجاع الكمية الافتراضية إلى 1
+        self.ent_qty.delete(0, tk.END)
+        self.ent_qty.insert(0, "1")
+
+
 
     def on_search_key(self, event=None):
         if event and event.keysym in ('Up', 'Down', 'Return', 'Left', 'Right'): return

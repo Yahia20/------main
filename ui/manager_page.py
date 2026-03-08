@@ -745,6 +745,7 @@ class ManagerPage(tk.Frame):
         for row in self.controller.db.get_closed_days():
             self.tree_days.insert("", "end", values=row)
 
+
     def show_day_details(self, event=None):
         sel = self.tree_days.selection()
         if not sel: return
@@ -768,8 +769,12 @@ class ManagerPage(tk.Frame):
             full_bill = self.controller.db.get_bill_by_id(b[0])
             pay_method = full_bill[3] if full_bill else "غير معروف"
             tree.insert("", "end", values=(b[0], b[1], b[2], b[3], pay_method))
-            if b[3] == "بيع": total_cash += b[2]
-            elif b[3] == "مرتجع": total_cash -= abs(b[2])
+            
+            # --- التعديل هنا: تصحيح الحساب ليدمج التبديل والمرتجع بدقة ---
+            if b[3] == "بيع" or b[3] == "تبديل": 
+                total_cash += b[2] # هيجمع البيع، وهيجمع التبديل (سواء كان العميل دافع فرق أو واخد فرق لأنه متسجل بالسالب)
+            elif b[3] == "مرتجع": 
+                total_cash -= abs(b[2]) # يطرح المرتجع دائماً
             
         tk.Label(win, text=f"صافي إيرادات الجلسة: {total_cash:,.2f} ج.م", font=("Arial", 14, "bold"), fg="green").pack(pady=10)
 
