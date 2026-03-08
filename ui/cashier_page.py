@@ -76,7 +76,7 @@ class CashierPage(tk.Frame):
 
         self.payment_var = tk.StringVar(value="كاش")
         pay_f = tk.Frame(tools_f, bg=COLOR_PANEL); pay_f.pack(pady=5)
-        for p in ["كاش", "انستاباي", "فيزا"]:
+        for p in ["كاش", "انستاباي", "فودافون كاش", "فيزا"]:
             tk.Radiobutton(pay_f, text=p, variable=self.payment_var, value=p, bg=COLOR_PANEL).pack(side="left", padx=10)
 
         self.discount_type = tk.StringVar(value="بدون خصم")
@@ -167,18 +167,30 @@ class CashierPage(tk.Frame):
             self.controller.show_frame("LoginPage")
 
     def on_search_key(self, event=None):
+        if event and event.keysym in ('Up', 'Down', 'Return', 'Left', 'Right'): return
         term = self.search_var.get().strip()
+        
+        if not term or " | كود:" in term: return
+
         results = self.controller.db.search_products(term)
         self.current_results = results
         self.combo_search['values'] = [f"{n} | {s} | {p}ج | كود: {i} | موديل: {mc}" for i,n,s,p,q,c,mc in results]
-        if results: self.combo_search.event_generate("<Down>")
+        if results and event and event.keysym != 'BackSpace': 
+            self.combo_search.event_generate("<Down>")
 
     def on_select_item(self, event=None):
-        idx = self.combo_search.current()
-        if 0 <= idx < len(self.current_results):
-            res = self.current_results[idx]
-            self.selected_product = res
-            self.lbl_item_details.config(text=f"الاسم: {res[1]} | مقاس: {res[2]} | لون: {res[5]}\nمتبقي: {res[4]} قطعة | كود الموديل: {res[6]}")
+        val = self.search_var.get()
+        if "كود: " in val:
+            try:
+                pid = val.split("كود: ")[1].split(" |")[0].strip()
+                res = self.controller.db.get_product_by_id(pid)
+                
+                if res:
+                    mapped_res = (res[0], res[1], res[4], res[5], res[8], res[2], res[10])
+                    self.selected_product = mapped_res
+                    self.lbl_item_details.config(text=f"الاسم: {mapped_res[1]} | مقاس: {mapped_res[2]} | لون: {mapped_res[5]}\nمتبقي: {mapped_res[4]} قطعة | كود الموديل: {mapped_res[6]}")
+            except Exception as e:
+                print("Selection Error:", e)
 
     def add_selected_item(self, qty_override=None):
         if not self.selected_product: return
@@ -224,6 +236,19 @@ class CashierPage(tk.Frame):
         if not self.cart: return
         if not self.validate_customer(): return
         
+        dtype = self.discount_type.get()
+        total_qty = sum(i['qty'] for i in self.cart)
+
+        if dtype == "عرض القطعة والتانية هدية" and total_qty != 2:
+            messagebox.showerror("خطأ في العرض", "عرض 'القطعة والتانية هدية' يتطلب وجود قطعتين بالضبط في السلة (ادفع 1 وخذ 1 هدية).")
+            return
+        elif dtype == "عرض 2 عليهم 3" and total_qty != 5:
+            messagebox.showerror("خطأ في العرض", "عرض '2 عليهم 3' يتطلب وجود 5 قطع بالضبط في السلة.")
+            return
+        elif dtype == "عرض 4 عليهم 7" and total_qty != 11:
+            messagebox.showerror("خطأ في العرض", "عرض '4 عليهم 7' يتطلب وجود 11 قطعة بالضبط في السلة.")
+            return
+
         gross = sum(i['total'] for i in self.cart)
         final_total, disc = self.calculate_net_total(gross)
         
@@ -232,7 +257,8 @@ class CashierPage(tk.Frame):
             self.ent_phone.get(), self.ent_name.get(), self.active_session_id,
             discount_type=self.discount_type.get(), discount_amount=disc
         )
-        print_receipt(self, bid, dt, final_total, self.payment_var.get(), "بيع", disc)
+        
+        print_receipt(self, bid, dt, final_total, self.payment_var.get(), "بيع", discount=disc, discount_type=self.discount_type.get())
         messagebox.showinfo("تم", "تمت العملية بنجاح")
         self.cart.clear(); self.update_cart_display(); self.update_cash_display()
 
@@ -268,8 +294,9 @@ class CashierPage(tk.Frame):
                 self.ent_name.insert(0, bill[6])
                 
             discount_val = bill[8] if len(bill) > 8 else 0
+            discount_type_val = bill[7] if len(bill) > 7 else "بدون خصم"
             
-            print_receipt(self, bill[0], bill[1], bill[2], bill[3], bill[4], discount=discount_val)
+            print_receipt(self, bill[0], bill[1], bill[2], bill[3], bill[4], discount=discount_val, discount_type=discount_type_val)
             
             self.cart = old_cart
             self.ent_name.delete(0, tk.END)
@@ -280,20 +307,22 @@ class CashierPage(tk.Frame):
             messagebox.showerror("خطأ", "رقم فاتورة غير موجود")
 
     # =========================================================================
-    # نافذة المرتجع والاستبدال (الذكية)
+    # نافذة المرتجع والاستبدال (الذكية الشاملة للعروض)
     # =========================================================================
     def open_refund_exchange_window(self):
         win = tk.Toplevel(self)
         win.title("نظام المرتجعات والاستبدال الشامل والمستقل")
-        win.geometry("1200x800")
+        win.geometry("1250x800")
         win.configure(bg="#ecf0f1")
         win.grab_set()
         
         win.old_cart = []
         win.new_cart = []
         win.target_bill = None
+        win.target_discount_type = "بدون خصم"
         win.cust_phone = ""
         win.cust_name = ""
+        win.final_net = 0
 
         top_f = tk.Frame(win, bg="#34495e", pady=15)
         top_f.pack(fill="x")
@@ -305,7 +334,7 @@ class CashierPage(tk.Frame):
         ent_bid = tk.Entry(search_f, font=("Arial",14), width=12)
         ent_bid.pack(side="right", padx=5)
 
-        lbl_bill_info = tk.Label(win, text="يرجى إدخال رقم الفاتورة للبدء", font=("Arial", 12, "bold"), bg="#ecf0f1", fg="#2980b9")
+        lbl_bill_info = tk.Label(win, text="يرجى إدخال رقم الفاتورة للبدء", font=("Arial", 12, "bold"), bg="#ecf0f1", fg="#2980b9", justify="center")
         lbl_bill_info.pack(pady=10)
 
         work_f = tk.Frame(win, bg="#ecf0f1")
@@ -313,7 +342,6 @@ class CashierPage(tk.Frame):
         work_f.grid_columnconfigure(0, weight=1)
         work_f.grid_columnconfigure(1, weight=1)
 
-        # اليمين: المرتجعات
         right_panel = tk.LabelFrame(work_f, text="القطع القابلة للاسترجاع", font=("Arial", 12, "bold"), bg="white")
         right_panel.grid(row=0, column=1, sticky="nsew", padx=10)
         
@@ -326,6 +354,7 @@ class CashierPage(tk.Frame):
             if not sel: return
             item = tree_old.item(sel[0])['values']
             max_qty = int(item[2])
+            
             qty = simpledialog.askinteger("كمية المرتجع", f"الكمية المراد إرجاعها (بحد أقصى {max_qty}):", maxvalue=max_qty, minvalue=1, parent=win)
             if not qty: return
             
@@ -338,7 +367,6 @@ class CashierPage(tk.Frame):
 
         tk.Button(right_panel, text="تحديد كمرتجع ⬇", bg="#e74c3c", fg="white", font=("Arial", 11, "bold"), command=add_to_return).pack(pady=10)
 
-        # اليسار: البدائل
         left_panel = tk.LabelFrame(work_f, text="القطع البديلة (الجديدة للعميل)", font=("Arial", 12, "bold"), bg="white")
         left_panel.grid(row=0, column=0, sticky="nsew", padx=10)
 
@@ -365,6 +393,10 @@ class CashierPage(tk.Frame):
         tree_new.pack(fill="both", expand=True, padx=10, pady=10)
 
         def add_to_new():
+            if win.target_discount_type == "خصم مخصص":
+                messagebox.showerror("مرفوض", "لا يمكن استبدال منتجات فاتورة تحتوي على 'خصم مخصص'. يمكنك فقط إرجاع الفاتورة بالكامل.", parent=win)
+                return
+
             idx = combo_new.current()
             if idx < 0 or idx >= len(ex_results): return
             p = ex_results[idx]
@@ -381,29 +413,104 @@ class CashierPage(tk.Frame):
         bottom_f = tk.Frame(win, bg="#ecf0f1", pady=20)
         bottom_f.pack(fill="x")
 
-        lbl_total_old = tk.Label(bottom_f, text="إجمالي المرتجع: 0.00 ج.م", font=("Arial", 14, "bold"), fg="#c0392b", bg="#ecf0f1", width=25)
+        lbl_total_old = tk.Label(bottom_f, text="إجمالي المرتجع: 0.00 ج.م", font=("Arial", 14, "bold"), fg="#c0392b", bg="#ecf0f1", width=35)
         lbl_total_old.pack(side="right", padx=10)
         
-        lbl_total_new = tk.Label(bottom_f, text="إجمالي الجديد: 0.00 ج.م", font=("Arial", 14, "bold"), fg="#27ae60", bg="#ecf0f1", width=25)
+        lbl_total_new = tk.Label(bottom_f, text="إجمالي الجديد: 0.00 ج.م", font=("Arial", 14, "bold"), fg="#27ae60", bg="#ecf0f1", width=35)
         lbl_total_new.pack(side="left", padx=10)
 
         lbl_net = tk.Label(bottom_f, text="الصافي: 0.00 ج.م", font=("Arial", 18, "bold"), bg="#f39c12", fg="white", padx=20, pady=10)
         lbl_net.pack(side="bottom", pady=20)
 
+        # دالة حساب الصافي المتقدمة للعروض والخصومات
         def update_totals():
-            t_old = sum(x['total'] for x in win.old_cart)
-            t_new = sum(x['total'] for x in win.new_cart)
-            net = t_new - t_old
+            if not win.target_bill: return
+            orig_net = float(win.target_bill[2])
             
-            lbl_total_old.config(text=f"إجمالي المرتجع: {t_old:,.2f} ج.م")
-            lbl_total_new.config(text=f"إجمالي الجديد: {t_new:,.2f} ج.م")
-            
-            if net > 0:
-                lbl_net.config(text=f"المطلوب من العميل دفعه: {net:,.2f} ج.م", bg="#e74c3c")
-            elif net < 0:
-                lbl_net.config(text=f"المطلوب رده للعميل: {abs(net):,.2f} ج.م", bg="#27ae60")
+            all_orig_items = self.controller.db.get_returnable_items(win.target_bill[0])
+            total_orig_qty = sum(x[2] for x in all_orig_items)
+            returned_qty = sum(x['qty'] for x in win.old_cart)
+
+            if win.target_discount_type == "خصم مخصص":
+                if returned_qty == total_orig_qty and total_orig_qty > 0:
+                    lbl_total_old.config(text=f"إرجاع الفاتورة بالكامل: {orig_net:,.2f} ج.م")
+                    lbl_total_new.config(text="-- لا يوجد استبدال --")
+                    lbl_net.config(text=f"المطلوب رده للعميل: {orig_net:,.2f} ج.م", bg="#27ae60")
+                    win.final_net = -orig_net
+                else:
+                    lbl_total_old.config(text="* يجب تحديد كافة القطع للإرجاع الكامل *")
+                    lbl_total_new.config(text="-- لا يوجد استبدال --")
+                    lbl_net.config(text="المرتجع الجزئي للخصم المخصص غير مسموح", bg="#e74c3c")
+                    win.final_net = None
+                    
+            elif win.target_discount_type in ["عرض القطعة والتانية هدية", "عرض 2 عليهم 3", "عرض 4 عليهم 7"]:
+                if not win.new_cart and not win.old_cart:
+                    lbl_total_old.config(text="إجمالي المرتجع: 0.00 ج.م")
+                    lbl_total_new.config(text="إجمالي الجديد: 0.00 ج.م")
+                    lbl_net.config(text="خالص (لا يوجد فرق مالي)", bg="#34495e")
+                    win.final_net = 0
+                    return
+                
+                # حالة الإرجاع فقط بدون تبديل
+                if not win.new_cart and win.old_cart:
+                    if returned_qty == total_orig_qty and total_orig_qty > 0:
+                        lbl_total_old.config(text=f"قيمة إرجاع العرض بالكامل: {orig_net:,.2f} ج.م")
+                        lbl_net.config(text=f"المطلوب رده للعميل: {orig_net:,.2f} ج.م", bg="#27ae60")
+                        win.final_net = -orig_net
+                    else:
+                        lbl_total_old.config(text="* يجب إرجاع كافة قطع العرض *")
+                        lbl_net.config(text="لا يمكن إرجاع أجزاء من العرض بدون استبدال", bg="#e74c3c")
+                        win.final_net = None
+                
+                # حالة الاستبدال داخل العرض (حساب السلة الافتراضية)
+                else:
+                    returned_dict = {x['id']: x['qty'] for x in win.old_cart}
+                    v_prices = []
+                    for it in all_orig_items:
+                        rem_q = it[2] - returned_dict.get(str(it[0]), 0)
+                        v_prices.extend([it[3]] * rem_q)
+                    for x in win.new_cart:
+                        v_prices.extend([x['price']] * x['qty'])
+                        
+                    req_qty = {"عرض القطعة والتانية هدية":2, "عرض 2 عليهم 3":5, "عرض 4 عليهم 7":11}.get(win.target_discount_type, 0)
+                    pay_qty = {"عرض القطعة والتانية هدية":1, "عرض 2 عليهم 3":3, "عرض 4 عليهم 7":7}.get(win.target_discount_type, 0)
+                    
+                    if len(v_prices) == req_qty:
+                        v_prices.sort(reverse=True)
+                        new_net = sum(v_prices[:pay_qty])
+                        diff = new_net - orig_net
+                        
+                        lbl_total_old.config(text=f"المدفوع مسبقاً للعرض: {orig_net:,.2f} ج.م")
+                        lbl_total_new.config(text=f"قيمة السلة الجديدة: {new_net:,.2f} ج.م")
+                        
+                        win.final_net = diff
+                        if diff > 0:
+                            lbl_net.config(text=f"المطلوب من العميل دفعه فارق: {diff:,.2f} ج.م", bg="#e74c3c")
+                        elif diff < 0:
+                            lbl_net.config(text=f"المطلوب رده للعميل: {abs(diff):,.2f} ج.م", bg="#27ae60")
+                        else:
+                            lbl_net.config(text="خالص (لا يوجد فرق مالي في الاستبدال)", bg="#34495e")
+                    else:
+                        lbl_total_old.config(text="---")
+                        lbl_total_new.config(text="---")
+                        lbl_net.config(text=f"إجمالي القطع المتبقية+الجديدة لا يكمل العرض (مطلوب {req_qty})", bg="#e74c3c")
+                        win.final_net = None
             else:
-                lbl_net.config(text="خالص (لا يوجد فرق مالي)", bg="#34495e")
+                # عمليات عادية بدون عروض
+                t_old = sum(x['total'] for x in win.old_cart)
+                t_new = sum(x['total'] for x in win.new_cart)
+                net = t_new - t_old
+                win.final_net = net
+                
+                lbl_total_old.config(text=f"إجمالي المرتجع: {t_old:,.2f} ج.م")
+                lbl_total_new.config(text=f"إجمالي الجديد: {t_new:,.2f} ج.م")
+                
+                if net > 0:
+                    lbl_net.config(text=f"المطلوب من العميل دفعه: {net:,.2f} ج.م", bg="#e74c3c")
+                elif net < 0:
+                    lbl_net.config(text=f"المطلوب رده للعميل: {abs(net):,.2f} ج.م", bg="#27ae60")
+                else:
+                    lbl_net.config(text="خالص (لا يوجد فرق مالي)", bg="#34495e")
 
         def search_old_bill(event=None):
             bid = ent_bid.get().strip()
@@ -412,13 +519,11 @@ class CashierPage(tk.Frame):
                 messagebox.showerror("خطأ", "رقم الفاتورة غير صحيح", parent=win)
                 return
             
-            # --- شرط التأكد من عدم مرور 30 يوماً ---
             bill_date = datetime.strptime(bill[1], "%Y-%m-%d %H:%M:%S")
             if (datetime.now() - bill_date).days > 30:
-                messagebox.showerror("مرفوض", "عذراً، لقد مر أكثر من 30 يوماً على هذه الفاتورة. لا يمكن إرجاعها أو استبدالها طبقاً لسياسات المحل.", parent=win)
+                messagebox.showerror("مرفوض", "عذراً، لقد مر أكثر من 30 يوماً على هذه الفاتورة. لا يمكن إرجاعها أو استبدالها.", parent=win)
                 return
             
-            # --- استخدام الدالة الذكية لجلب القطع المتبقية فقط ---
             items = self.controller.db.get_returnable_items(bid)
             if not items:
                 messagebox.showinfo("معلومة", "هذه الفاتورة تم إرجاع جميع منتجاتها مسبقاً ولا يوجد بها قطع قابلة للاسترجاع.", parent=win)
@@ -427,12 +532,23 @@ class CashierPage(tk.Frame):
             win.target_bill = bill
             win.cust_phone = bill[5]
             win.cust_name = bill[6]
-            lbl_bill_info.config(text=f"الفاتورة #{bill[0]} | العميل: {win.cust_name} ({win.cust_phone}) | السداد: {bill[3]}")
+            win.target_discount_type = bill[7] if len(bill) > 7 else "بدون خصم"
+            
+            info_text = f"الفاتورة #{bill[0]} | العميل: {win.cust_name} ({win.cust_phone}) | السداد: {bill[3]}\nحالة العروض: {win.target_discount_type}"
+            
+            if win.target_discount_type == "خصم مخصص":
+                lbl_bill_info.config(text=info_text + "\n(تنبيه: مرتجع كامل فقط - لا يمكن الاستبدال)", fg="red")
+            elif win.target_discount_type != "بدون خصم":
+                lbl_bill_info.config(text=info_text + "\n(تنبيه: سيتم حساب فارق الاستبدال بناءً على شروط العرض الأصلي)", fg="#f39c12")
+            else:
+                lbl_bill_info.config(text=info_text, fg="#2980b9")
             
             for i in tree_old.get_children(): tree_old.delete(i)
-            win.old_cart.clear(); update_totals()
+            for i in tree_new.get_children(): tree_new.delete(i)
+            win.old_cart.clear()
+            win.new_cart.clear()
+            update_totals()
             
-            # عرض القطع القابلة للإرجاع فقط في الجدول
             for it in items:
                 tree_old.insert("", "end", values=(it[0], it[1], it[2], it[3], 0))
 
@@ -444,15 +560,16 @@ class CashierPage(tk.Frame):
                 messagebox.showwarning("تنبيه", "يجب تحديد مرتجعات أو بدائل لإتمام العملية", parent=win)
                 return
                 
-            t_old = sum(x['total'] for x in win.old_cart)
-            t_new = sum(x['total'] for x in win.new_cart)
-            net = t_new - t_old
+            if win.final_net is None:
+                messagebox.showerror("خطأ", "يوجد خطأ في مطابقة شروط العرض أو الخصم. راجع الرسالة التحذيرية بالأسفل.", parent=win)
+                return
+                
             pay_method = self.payment_var.get()
             
             if messagebox.askyesno("تأكيد", "هل أنت متأكد من تنفيذ هذه العملية؟", parent=win):
-                # نمرر رقم الفاتورة الأصلية لربط المرتجع بها
                 bid, dt = self.controller.db.process_exchange(
-                    win.old_cart, win.new_cart, net, pay_method, win.cust_phone, win.cust_name, self.active_session_id, original_bill_id=win.target_bill[0]
+                    win.old_cart, win.new_cart, win.final_net, pay_method, win.cust_phone, win.cust_name, self.active_session_id, 
+                    original_bill_id=win.target_bill[0], discount_type=win.target_discount_type
                 )
                 
                 temp_cart = []
@@ -478,11 +595,11 @@ class CashierPage(tk.Frame):
                 
                 self.cart = temp_cart
                 self.ent_name.delete(0, tk.END)
-                if win.cust_name:
-                    self.ent_name.insert(0, win.cust_name)
+                if win.cust_name: self.ent_name.insert(0, win.cust_name)
                 
                 tr_type = "مرتجع" if not win.new_cart else "تبديل"
-                print_receipt(self, bid, dt, net, pay_method, tr_type, discount=0)
+                
+                print_receipt(self, bid, dt, win.final_net, pay_method, tr_type, discount=0, discount_type=win.target_discount_type)
                 
                 self.cart = old_cart
                 self.ent_name.delete(0, tk.END)
@@ -492,4 +609,4 @@ class CashierPage(tk.Frame):
                 self.update_cash_display()
                 win.destroy()
 
-        tk.Button(win, text="✔️ تأكيد العملية النهائية للمرتجع والبدل والطباعة", font=("Arial", 16, "bold"), bg="#2980b9", fg="white", width=40, height=2, command=finalize_exchange).pack(side="bottom", pady=20)
+        tk.Button(win, text="✔️ تأكيد العملية النهائية للمرتجع/البدل والطباعة", font=("Arial", 16, "bold"), bg="#2980b9", fg="white", width=40, height=2, command=finalize_exchange).pack(side="bottom", pady=20)

@@ -20,8 +20,7 @@ def set_default_printer(printer_name="XP-80C"):
     except:
         return False
 
-def print_receipt(self, bid, date, total, method, tr_type, discount=0, original=None):
-    # محاولة تعيين الطابعة الحرارية كافتراضية قبل الطباعة
+def print_receipt(self, bid, date, total, method, tr_type, discount=0, discount_type="بدون خصم", original=None):
     set_default_printer("XP-80C")
     
     try:
@@ -79,9 +78,14 @@ def print_receipt(self, bid, date, total, method, tr_type, discount=0, original=
         draw.text((15, curr_y), ar(f"التاريخ: {d_str}"), fill='black', font=font_reg, anchor="lm")
         curr_y += 35
 
-        draw.text((img_w - 15, curr_y), ar(f"نوع العملية: {tr_type}"), fill='black', font=font_reg, anchor="rm")
+        draw.text((img_w - 15, curr_y), ar(f"نوع العملية: {tr_type}"), fill='black', font=font_bd, anchor="rm")
         draw.text((15, curr_y), ar(f"الوقت: {t_str}"), fill='black', font=font_reg, anchor="lm")
-        curr_y += 40
+        curr_y += 45
+
+        # التعديل: إظهار نوع العرض إن وجد في הפاتورة
+        if discount_type != "بدون خصم":
+            draw.text((img_w / 2, curr_y), ar(f"شامل عرض: {discount_type}"), fill='black', font=font_bd, anchor="mm")
+            curr_y += 40
 
         row_h = 45
         draw.rectangle([(10, curr_y), (img_w - 10, curr_y + row_h)], outline='black', width=2)

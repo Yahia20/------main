@@ -31,11 +31,9 @@ class ManagerPage(tk.Frame):
         report_canvas.pack(side="left", fill="both", expand=True)
         report_scrollbar.pack(side="right", fill="y")
 
- # --- الإطار الأول (سطر الفلاتر) ---
         frm_filter_inputs = tk.Frame(self.scrollable_report, bg=COLOR_PANEL)
         frm_filter_inputs.pack(fill="x", pady=(15, 5), padx=20)
         
-        # --- الإطار الثاني (سطر الأزرار تحته مباشرة) ---
         frm_filter_buttons = tk.Frame(self.scrollable_report, bg=COLOR_PANEL)
         frm_filter_buttons.pack(fill="x", pady=(0, 15), padx=20)
         
@@ -77,10 +75,11 @@ class ManagerPage(tk.Frame):
         self.ent_phone_filter.pack(side="left", padx=2)
         self.ent_phone_filter.bind("<Return>", trigger_update)
         
-        # --- وضع الأزرار في السطر الثاني لتكون ظاهرة دائماً ---
+        # التعديل هنا: تحديث أزرار التصدير
         tk.Button(frm_filter_buttons, text="تحديث التقرير", bg=COLOR_ACCENT, fg="white", font=("Arial",11,"bold"), width=15, command=self.show_report).pack(side="left", padx=15)
-        tk.Button(frm_filter_buttons, text="تصدير إكسيل (مبسط)", font=("Arial",11), command=self.export_report).pack(side="left", padx=10)
-        tk.Button(frm_filter_buttons, text="تصدير حركات مفصلة (Excel)", bg="#27ae60", fg="white", font=("Arial",11,"bold"), command=self.open_detailed_export_window).pack(side="left", padx=10)       
+        tk.Button(frm_filter_buttons, text="تصدير فواتير مفصلة (Excel)", bg="#27ae60", fg="white", font=("Arial",11,"bold"), command=lambda: self.open_multi_export_window("فواتير")).pack(side="left", padx=10)
+        tk.Button(frm_filter_buttons, text="تقارير أخرى (Excel)", bg="#8e44ad", fg="white", font=("Arial",11,"bold"), command=lambda: self.open_multi_export_window("اخرى")).pack(side="left", padx=10)       
+        
         frm_cost = tk.Frame(self.scrollable_report, bg=COLOR_PANEL)
         frm_cost.pack(fill="x", pady=10, padx=20)
         tk.Label(frm_cost, text="مصروفات ثابتة أخرى:", bg=COLOR_PANEL, font=("Arial",11,"bold")).pack(anchor="w")
@@ -137,7 +136,7 @@ class ManagerPage(tk.Frame):
                   command=self.delete_whole_model).pack(side="left", padx=5)
                   
         self.tab_critical = tk.Frame(notebook, bg=COLOR_PANEL)
-        notebook.add(self.tab_critical, text="ناقص جداً (1–2 قطعة)")
+        notebook.add(self.tab_critical, text="ناقص جداً (1–2 قطعة للموديل)")
 
         search_frame_crit = tk.Frame(self.tab_critical, bg=COLOR_PANEL)
         search_frame_crit.pack(fill="x", padx=20, pady=10)
@@ -205,33 +204,67 @@ class ManagerPage(tk.Frame):
         try:
             import barcode
             from barcode.writer import ImageWriter
-            from PIL import Image, ImageTk
+            from PIL import Image, ImageTk, ImageDraw, ImageFont
         except ImportError:
-            messagebox.showerror("نقص في المكتبات", "يرجى فتح الطرفية وتثبيت المكتبات أولاً:\n\npip install python-barcode pillow")
+            messagebox.showerror("نقص في المكتبات", "يرجى فتح الطرفية وتثبيت المكتبات أولاً:\n\npip install python-barcode pillow arabic-reshaper python-bidi")
             return
 
         win = tk.Toplevel(self)
         win.title(f"باركود المنتج: {product_id}")
-        win.geometry("400x350")
+        win.geometry("450x350")
         win.configure(bg="white")
         win.grab_set()
 
         try:
+            res = self.controller.db.get_product_by_id(product_id)
+            price = res[5]
+            size = res[4]
+            color = res[2]
+            
             code128 = barcode.get_barcode_class('code128')
             writer = ImageWriter()
             barcode_obj = code128(str(product_id), writer=writer)
             
             import tempfile, os
             temp_dir = tempfile.gettempdir()
-            temp_file = os.path.join(temp_dir, f"barcode_{product_id}")
-            barcode_obj.save(temp_file)
-            img_path = f"{temp_file}.png"
+            
+            # منع كتابة النص التلقائي الذي يسبب الخطأ
+            options = {"write_text": False, "module_height": 7.0, "quiet_zone": 1.0} 
+            tmp_barcode_path = os.path.join(temp_dir, f"raw_bar_{product_id}")
+            barcode_obj.save(tmp_barcode_path, options=options)
+            
+            # --- رسم الباركود المجمع ---
+            label_img = Image.new('RGB', (350, 200), color='white')
+            draw = ImageDraw.Draw(label_img)
+            
+            try:
+                import arabic_reshaper
+                from bidi.algorithm import get_display
+                font_bd = ImageFont.truetype("arialbd.ttf", 22)
+                font_sm = ImageFont.truetype("arialbd.ttf", 16)
+                font_lg = ImageFont.truetype("arialbd.ttf", 28)
+            except:
+                font_bd = font_sm = font_lg = ImageFont.load_default()
+                
+            def ar(t):
+                try: return get_display(arabic_reshaper.reshape(str(t)))
+                except: return str(t)
+            
+            # رسم السعر
+            draw.text((175, 20), f"{price} EGP", fill='black', font=font_lg, anchor="mm")
+            # لصق كود الأعمدة
+            raw_barcode = Image.open(f"{tmp_barcode_path}.png").resize((280, 80))
+            label_img.paste(raw_barcode, (35, 50))
+            # رسم الكود رقماً
+            draw.text((175, 145), str(product_id), fill='black', font=font_bd, anchor="mm")
+            # رسم المقاس واللون
+            draw.text((175, 175), ar(f"مقاس: {size} | لون: {color}"), fill='black', font=font_sm, anchor="mm")
+            
+            final_img_path = os.path.join(temp_dir, f"full_barcode_{product_id}.png")
+            label_img.save(final_img_path)
 
-            img = Image.open(img_path)
-            img = img.resize((280, 140))
-            photo = ImageTk.PhotoImage(img)
-
-            tk.Label(win, text=f"الصنف: {product_name}", font=("Arial", 16, "bold"), bg="white").pack(pady=(20, 5))
+            photo = ImageTk.PhotoImage(label_img)
+            tk.Label(win, text=f"الصنف: {product_name}", font=("Arial", 14, "bold"), bg="white").pack(pady=(15, 5))
             lbl_img = tk.Label(win, image=photo, bg="white")
             lbl_img.image = photo 
             lbl_img.pack()
@@ -244,7 +277,7 @@ class ManagerPage(tk.Frame):
                     hDC = win32ui.CreateDC()
                     hDC.CreatePrinterDC(printer_name)
                     
-                    bmp = Image.open(img_path)
+                    bmp = Image.open(final_img_path)
                     printer_width = int(hDC.GetDeviceCaps(8))
                     printer_height = int(bmp.size[1] * (printer_width / bmp.size[0]))
                     
@@ -259,7 +292,7 @@ class ManagerPage(tk.Frame):
                 except Exception as e:
                     messagebox.showerror("خطأ في الطباعة", str(e), parent=win)
 
-            tk.Button(win, text="🖨️ طباعة الباركود", font=("Arial", 14, "bold"), bg="#2980b9", fg="white", command=print_barcode).pack(pady=20)
+            tk.Button(win, text="🖨️ طباعة الباركود", font=("Arial", 14, "bold"), bg="#2980b9", fg="white", command=print_barcode).pack(pady=15)
 
         except Exception as e:
             messagebox.showerror("خطأ", f"حدث خطأ أثناء توليد الباركود:\n{e}")
@@ -288,6 +321,8 @@ class ManagerPage(tk.Frame):
         
         if bill[8] > 0:
             info_text += f"الخصم: {bill[7]} (بقيمة {bill[8]:,.2f} ج.م)\n"
+        elif bill[7] != "بدون خصم":
+            info_text += f"العرض: {bill[7]}\n"
         else:
             info_text += "الخصم: لا يوجد\n"
         
@@ -303,7 +338,7 @@ class ManagerPage(tk.Frame):
             total_item = item[2] * item[3]
             tree.insert("", "end", values=(item[0], item[4], item[1], item[2], item[3], total_item))
             
-        tk.Label(win, text=f"إجمالي الفاتورة (بعد الخصم): {bill[2]:,.2f} ج.م", font=("Arial", 14, "bold"), bg=COLOR_PANEL, fg="red").pack(pady=10)
+        tk.Label(win, text=f"إجمالي الفاتورة (النهائي): {bill[2]:,.2f} ج.م", font=("Arial", 14, "bold"), bg=COLOR_PANEL, fg="red").pack(pady=10)
 
     def load_customers_data(self):
         for i in self.tree_customers.get_children(): self.tree_customers.delete(i)
@@ -535,100 +570,106 @@ class ManagerPage(tk.Frame):
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
 
-    def export_report(self):
-        fr = self.ent_from.get().strip()
-        to = self.ent_to.get().strip()
-        phone = self.ent_phone_filter.get().strip()
-        selected_prod = self.product_combo.get()
-        prod_id = selected_prod.split(" - ")[0] if " - " in selected_prod and selected_prod != "الكل" else None
-        model_f = self.model_combo.get()
-        trans_f = self.trans_filter.get()
-        pay_f = self.pay_filter.get()
-        
-        data = self.controller.db.get_sales_report(fr, to, prod_id, phone, model_f, trans_f if trans_f != "الكل" else None, pay_f if pay_f != "الكل" else None)
-        if not data:
-            messagebox.showinfo("لا بيانات", "لا توجد فواتير لتصديرها")
-            return
-            
-        file = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files","*.xlsx")])
-        if file:
-            self.controller.db.export_report_to_excel(data, file)
-            messagebox.showinfo("تم", "تم حفظ التقرير بصيغة إكسيل")
-
-    # --- التعديل المذهل: نافذة خيارات التصدير المفصل للمدير ---
-    def open_detailed_export_window(self):
+    # --- التصدير الشامل المتعدد ---
+    def open_multi_export_window(self, mode="فواتير"):
         win = tk.Toplevel(self)
-        win.title("خيارات التصدير المفصل")
-        win.geometry("500x350")
+        win.title("تصدير التقارير (Excel)")
+        win.geometry("600x450")
         win.configure(bg=COLOR_PANEL)
         win.grab_set()
 
-        tk.Label(win, text="اختر طريقة فلترة التقرير المفصل:", font=("Arial", 14, "bold"), bg=COLOR_PANEL).pack(pady=15)
+        tk.Label(win, text="خيارات الفلترة والتصدير", font=("Arial", 16, "bold"), bg=COLOR_PANEL).pack(pady=15)
 
-        var_choice = tk.StringVar(value="date")
-
-        tk.Radiobutton(win, text="حسب الفترة الزمنية (من - إلى المحددة بالخلفية)", variable=var_choice, value="date", font=("Arial", 12), bg=COLOR_PANEL).pack(anchor="e", padx=30, pady=5)
+        filter_frame = tk.LabelFrame(win, text="طريقة الفلترة (تنطبق على الفواتير وسجل الأيام)", bg=COLOR_PANEL, font=("Arial", 11, "bold"))
+        filter_frame.pack(fill="x", padx=20, pady=5)
         
-        frame_sess = tk.Frame(win, bg=COLOR_PANEL)
-        frame_sess.pack(fill="x", padx=40, pady=5)
-        tk.Radiobutton(frame_sess, text="حسب رقم جلسة محدد:", variable=var_choice, value="session_id", font=("Arial", 12), bg=COLOR_PANEL).pack(side="right")
-        ent_sess = tk.Entry(frame_sess, font=("Arial", 12), width=10, justify="center")
-        ent_sess.pack(side="right", padx=10)
+        var_choice = tk.StringVar(value="all")
 
-        frame_n = tk.Frame(win, bg=COLOR_PANEL)
-        frame_n.pack(fill="x", padx=40, pady=5)
-        tk.Radiobutton(frame_n, text="لآخر عدد من الجلسات المغلقة:", variable=var_choice, value="last_n", font=("Arial", 12), bg=COLOR_PANEL).pack(side="right")
-        ent_n = tk.Entry(frame_n, font=("Arial", 12), width=10, justify="center")
-        ent_n.pack(side="right", padx=10)
+        tk.Radiobutton(filter_frame, text="كل الوقت (الجميع)", variable=var_choice, value="all", font=("Arial", 11), bg=COLOR_PANEL).pack(anchor="e", padx=30)
+        tk.Radiobutton(filter_frame, text="حسب الفترة الزمنية (من - إلى المحددة بالخلفية)", variable=var_choice, value="date", font=("Arial", 11), bg=COLOR_PANEL).pack(anchor="e", padx=30)
+        
+        f1 = tk.Frame(filter_frame, bg=COLOR_PANEL); f1.pack(fill="x", padx=30, pady=2)
+        tk.Radiobutton(f1, text="حسب رقم جلسة محدد:", variable=var_choice, value="session_id", font=("Arial", 11), bg=COLOR_PANEL).pack(side="right")
+        ent_sess = tk.Entry(f1, font=("Arial", 11), width=10, justify="center"); ent_sess.pack(side="right", padx=10)
+
+        f2 = tk.Frame(filter_frame, bg=COLOR_PANEL); f2.pack(fill="x", padx=30, pady=2)
+        tk.Radiobutton(f2, text="لآخر عدد من الجلسات المغلقة:", variable=var_choice, value="last_n", font=("Arial", 11), bg=COLOR_PANEL).pack(side="right")
+        ent_n = tk.Entry(f2, font=("Arial", 11), width=10, justify="center"); ent_n.pack(side="right", padx=10)
+
+        type_frame = tk.LabelFrame(win, text="اختر التقرير المراد تصديره", bg=COLOR_PANEL, font=("Arial", 11, "bold"))
+        type_frame.pack(fill="x", padx=20, pady=10)
+        
+        report_type_var = tk.StringVar(value=mode)
+        types = [
+            ("تصدير فواتير مفصلة", "فواتير"), ("ملفات العملاء", "عملاء"), 
+            ("سجل الأيام المغلقة", "ايام"), ("إدارة الموردين", "موردين"), 
+            ("حالة المخزون (الكل)", "مخزون"), ("ناقص جداً (الموديلات)", "نواقص")
+        ]
+        
+        for idx, (txt, val) in enumerate(types):
+            tk.Radiobutton(type_frame, text=txt, variable=report_type_var, value=val, font=("Arial", 11), bg=COLOR_PANEL).grid(row=idx//2, column=1-(idx%2), sticky="e", padx=20, pady=5)
+            
+        tk.Label(win, text="ملاحظة: تقارير المخزن، الموردين، والعملاء يتم استخراج الحالة الحالية لهم كلياً.", fg="gray", bg=COLOR_PANEL).pack()
 
         def do_export():
+            try:
+                import pandas as pd
+            except ImportError:
+                return messagebox.showerror("نقص مكتبات", "لتشغيل التصدير للإكسيل يرجى كتابة الأمر التالي في الطرفية:\npip install pandas openpyxl", parent=win)
+
             choice = var_choice.get()
+            rep_type = report_type_var.get()
             data = []
-            report_name = "Detailed_Report"
+            cols = []
+            report_name = f"Report_{rep_type}"
             
-            if choice == "date":
-                fr = self.ent_from.get().strip()
-                to = self.ent_to.get().strip()
-                if not fr or not to:
-                    messagebox.showwarning("تنبيه", "يرجى تحديد فترة زمنية في الخلفية أولاً", parent=win)
-                    return
-                data = self.controller.db.get_detailed_transactions_report(fr, to)
-                report_name += f"_{fr}_to_{to}"
+            if rep_type == "فواتير":
+                cols = ["رقم الفاتورة", "التاريخ", "رقم الجلسة", "نوع العملية", "طريقة الدفع", "هاتف العميل", "اسم العميل", "إجمالي الفاتورة", "نوع الخصم", "قيمة الخصم", "كود المنتج", "اسم المنتج", "الكمية", "سعر القطعة", "كود الموديل"]
+                if choice == "all": data = self.controller.db.get_all_detailed_transactions()
+                elif choice == "date":
+                    fr, to = self.ent_from.get().strip(), self.ent_to.get().strip()
+                    data = self.controller.db.get_detailed_transactions_report(fr, to)
+                elif choice == "session_id":
+                    if not ent_sess.get().isdigit(): return messagebox.showwarning("خطأ", "أدخل رقم جلسة صحيح", parent=win)
+                    data = self.controller.db.get_detailed_transactions_by_session(int(ent_sess.get()))
+                elif choice == "last_n":
+                    if not ent_n.get().isdigit(): return messagebox.showwarning("خطأ", "أدخل عدد صحيح", parent=win)
+                    data = self.controller.db.get_detailed_transactions_last_n_sessions(int(ent_n.get()))
+            
+            elif rep_type == "ايام":
+                cols = ["رقم الجلسة", "بداية الجلسة", "نهاية الجلسة", "عدد الفواتير", "إجمالي المبيعات"]
+                data = self.controller.db.get_closed_days()
+                # يمكن تصفيتها جدولياً هنا إذا لزم، لكن يتم إرجاع الكل للتبسيط
                 
-            elif choice == "session_id":
-                sid = ent_sess.get().strip()
-                if not sid.isdigit(): 
-                    return messagebox.showwarning("خطأ", "يرجى إدخال رقم جلسة صحيح", parent=win)
-                data = self.controller.db.get_detailed_transactions_by_session(int(sid))
-                report_name += f"_Session_{sid}"
+            elif rep_type == "عملاء":
+                cols = ["رقم الهاتف", "الاسم", "إجمالي المشتريات", "تاريخ آخر زيارة", "آخر صنف تم شراؤه"]
+                data = self.controller.db.get_all_customers_report()
                 
-            elif choice == "last_n":
-                n = ent_n.get().strip()
-                if not n.isdigit(): 
-                    return messagebox.showwarning("خطأ", "يرجى إدخال عدد صحيح (مثال: 5)", parent=win)
-                data = self.controller.db.get_detailed_transactions_last_n_sessions(int(n))
-                report_name += f"_Last_{n}_Sessions"
+            elif rep_type == "موردين":
+                cols = ["ID", "اسم المورد", "اسم الشحنة", "المدفوع", "الآجل", "الإجمالي"]
+                data = self.controller.db.get_all_suppliers()
+                
+            elif rep_type == "مخزون":
+                cols = ["الكود", "اسم الصنف", "الكمية", "سعر البيع", "سعر التكلفة", "المورد", "الحد الأدنى", "كود الموديل"]
+                data = self.controller.db.get_all_stock()
+                
+            elif rep_type == "نواقص":
+                cols = ["الكود", "اسم الصنف", "الكمية", "المورد", "الحد الأدنى", "كود الموديل"]
+                data = self.controller.db.get_critical_low_stock()
 
             if not data:
-                messagebox.showinfo("لا بيانات", "لا توجد حركات مطابقة للبحث", parent=win)
+                messagebox.showinfo("لا بيانات", "لا توجد بيانات مطابقة للبحث أو التقرير فارغ", parent=win)
                 return
 
             file = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files","*.xlsx")], initialfile=f"{report_name}.xlsx")
             if not file: return
 
-            try:
-                import pandas as pd
-                cols = ["رقم الفاتورة", "التاريخ", "رقم الجلسة", "نوع العملية", "طريقة الدفع",
-                        "هاتف العميل", "اسم العميل", "إجمالي الفاتورة", "نوع الخصم", "قيمة الخصم",
-                        "كود المنتج", "اسم المنتج", "الكمية", "سعر القطعة", "كود الموديل"]
-                df = pd.DataFrame(data, columns=cols)
-                df.to_excel(file, index=False)
-                messagebox.showinfo("نجاح", "تم تصدير التقرير المفصل بنجاح!", parent=win)
-                win.destroy()
-            except ImportError:
-                messagebox.showerror("نقص مكتبات", "لتشغيل التصدير للإكسيل يرجى كتابة الأمر التالي في الطرفية:\npip install pandas openpyxl", parent=win)
+            df = pd.DataFrame(data, columns=cols)
+            df.to_excel(file, index=False)
+            messagebox.showinfo("نجاح", "تم التصدير بنجاح!", parent=win)
+            win.destroy()
 
-        tk.Button(win, text="📥 استخراج التقرير (Export)", bg="#27ae60", fg="white", font=("Arial", 14, "bold"), command=do_export).pack(pady=25)
+        tk.Button(win, text="📥 استخراج التقرير (Export)", bg="#27ae60", fg="white", font=("Arial", 14, "bold"), command=do_export).pack(pady=15)
     # -------------------------------------------------------------
 
     def load_all_stock(self, *args):
@@ -742,6 +783,7 @@ class ManagerPage(tk.Frame):
             self.controller.db.delete_supplier(sid)
             self.load_suppliers()
 
+
     def open_add_product_window(self, product=None):
         win = tk.Toplevel(self)
         win.title("إضافة موديل جديد (مع قطع متعددة)")
@@ -779,7 +821,12 @@ class ManagerPage(tk.Frame):
             var_entries[lab] = ent
             
         added_variants = []
-        tree_var = ttk.Treeview(lower, columns=cols_var, show="headings", height=8)
+        
+        # --- إضافة إطار للجدول وشريط التمرير ---
+        tree_frame = tk.Frame(lower, bg=COLOR_BG)
+        tree_var = ttk.Treeview(tree_frame, columns=cols_var, show="headings", height=8)
+        scrollbar = ttk.Scrollbar(tree_frame, orient="vertical", command=tree_var.yview)
+        tree_var.configure(yscrollcommand=scrollbar.set)
         
         def add_variant_row():
             try:
@@ -795,9 +842,6 @@ class ManagerPage(tk.Frame):
                 messagebox.showerror("خطأ", str(e))
                 
         tk.Button(var_f, text="إضافة القطعة", bg=COLOR_ACCENT, fg=COLOR_BG, font=("Arial", 10, "bold"), command=add_variant_row).pack(side="left", padx=15)
-        
-        for c in cols_var: tree_var.heading(c, text=c)
-        tree_var.pack(fill="both", expand=True, padx=10, pady=10)
         
         def finish_model():
             try:
@@ -822,8 +866,19 @@ class ManagerPage(tk.Frame):
                 self.refresh_data()
             except Exception as e:
                 messagebox.showerror("خطأ", str(e))
-                
-        tk.Button(lower, text="تم - حفظ كل القطع للموديل", font=("Arial",13,"bold"), bg=COLOR_SUCCESS, fg="white", width=30, command=finish_model).pack(pady=10)
+        
+        # 1. وضع زر الحفظ في الأسفل
+        tk.Button(lower, text="تم - حفظ كل القطع للموديل", font=("Arial", 14, "bold"), bg=COLOR_SUCCESS, fg="white", width=30, command=finish_model).pack(side="bottom", pady=15)
+        
+        # 2. وضع إطار الجدول في المنتصف
+        tree_frame.pack(side="top", fill="both", expand=True, padx=10, pady=5)
+        
+        # 3. وضع الجدول وشريط التمرير داخل الإطار
+        for c in cols_var: tree_var.heading(c, text=c)
+        scrollbar.pack(side="right", fill="y")
+        tree_var.pack(side="left", fill="both", expand=True)              
+
+
 
     def open_edit_product(self):
         sel = self.tree_low.selection()

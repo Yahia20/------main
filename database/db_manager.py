@@ -159,16 +159,23 @@ class DBManager:
             return False
 
     def get_critical_low_stock(self, search_term=""):
+        # التعديل هنا: الفلترة بناء على مجموع القطع للموديل بالكامل
+        base_query = """
+            SELECT id, name, qty, supplier, min_limit, model_code 
+            FROM products 
+            WHERE 
+              (model_code != '' AND model_code IS NOT NULL AND model_code IN (
+                  SELECT model_code FROM products WHERE model_code != '' GROUP BY model_code HAVING SUM(qty) <= 2
+              ))
+              OR 
+              ((model_code = '' OR model_code IS NULL) AND qty <= 2)
+        """
         if not search_term:
-            self.cursor.execute("SELECT id, name, qty, supplier, min_limit, model_code FROM products WHERE qty IN (1, 2) ORDER BY qty ASC")
+            self.cursor.execute(base_query + " ORDER BY model_code ASC, qty ASC")
         else:
             t = f"%{search_term}%"
-            self.cursor.execute("""
-                SELECT id, name, qty, supplier, min_limit, model_code 
-                FROM products 
-                WHERE qty IN (1, 2) AND (id LIKE ? OR model_code LIKE ? OR name LIKE ?)
-                ORDER BY qty ASC
-            """, (t, t, t))
+            full_query = base_query + " AND (id LIKE ? OR model_code LIKE ? OR name LIKE ?) ORDER BY model_code ASC, qty ASC"
+            self.cursor.execute(full_query, (t, t, t))
         return self.cursor.fetchall()
 
     def get_product_by_id(self, pid):
@@ -268,14 +275,15 @@ class DBManager:
         self.conn.commit()
         return bill_id, date_str
 
-    def process_exchange(self, old_items, new_items, net_total, method, phone, name, session_id, original_bill_id=None):
+    def process_exchange(self, old_items, new_items, net_total, method, phone, name, session_id, original_bill_id=None, discount_type="بدون خصم"):
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         t_type = "مرتجع" if not new_items else "تبديل"
         
+        # حفظ الفاتورة بالخصم الخاص بها إن وجد
         self.cursor.execute("""
             INSERT INTO sales (date, total, payment_method, transaction_type, customer_phone, customer_name, session_id, original_bill_id, discount_type, discount_amount)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'بدون خصم', 0.0)
-        """, (date_str, net_total, method, t_type, phone, name, session_id, original_bill_id))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0)
+        """, (date_str, net_total, method, t_type, phone, name, session_id, original_bill_id, discount_type))
         bill_id = self.cursor.lastrowid
         
         for item in old_items:
@@ -401,9 +409,20 @@ class DBManager:
         self.cursor.execute(query, params)
         return self.cursor.fetchall()
 
+    # --- التقرير المفصل بكل الوقت ---
+    def get_all_detailed_transactions(self):
+        query = """
+            SELECT s.bill_id, s.date, s.session_id, s.transaction_type, s.payment_method,
+                   s.customer_phone, s.customer_name, s.total, s.discount_type, s.discount_amount,
+                   si.product_id, p.name as product_name, si.qty, si.price, p.model_code
+            FROM sales s
+            JOIN sale_items si ON s.bill_id = si.bill_id
+            LEFT JOIN products p ON si.product_id = p.id
+            ORDER BY s.date DESC, s.bill_id DESC
+        """
+        self.cursor.execute(query)
+        return self.cursor.fetchall()
 
-
-# --- التقرير المفصل بالتاريخ ---
     def get_detailed_transactions_report(self, start_date, end_date):
         query = """
             SELECT s.bill_id, s.date, s.session_id, s.transaction_type, s.payment_method,
@@ -418,7 +437,6 @@ class DBManager:
         self.cursor.execute(query, (f"{start_date} 00:00:00", f"{end_date} 23:59:59"))
         return self.cursor.fetchall()
 
-    # --- التقرير المفصل برقم الجلسة ---
     def get_detailed_transactions_by_session(self, session_id):
         query = """
             SELECT s.bill_id, s.date, s.session_id, s.transaction_type, s.payment_method,
@@ -433,7 +451,6 @@ class DBManager:
         self.cursor.execute(query, (session_id,))
         return self.cursor.fetchall()
 
-    # --- التقرير المفصل بآخر X جلسات مغلقة ---
     def get_detailed_transactions_last_n_sessions(self, n):
         self.cursor.execute("SELECT session_id FROM daily_sessions WHERE status='CLOSED' ORDER BY session_id DESC LIMIT ?", (n,))
         sessions = [row[0] for row in self.cursor.fetchall()]
@@ -452,8 +469,6 @@ class DBManager:
         """
         self.cursor.execute(query, sessions)
         return self.cursor.fetchall()
-
-
 
     def get_total_profit(self, start_date=None, end_date=None, product_filter=None, phone_filter=None, model_filter=None):
         query = """
@@ -502,16 +517,6 @@ class DBManager:
     def get_unique_model_codes(self):
         self.cursor.execute("SELECT DISTINCT model_code FROM products WHERE model_code IS NOT NULL ORDER BY model_code")
         return [row[0] for row in self.cursor.fetchall() if row[0]]
-
-    def export_report_to_excel(self, data, filename):
-        if pd is not None:
-            df = pd.DataFrame(data, columns=['التاريخ', 'الإجمالي', 'طريقة الدفع', 'نوع العملية', 'الهاتف'])
-            df.to_excel(filename, index=False)
-        else:
-            with open(filename.replace('.xlsx', '.csv'), 'w', newline='', encoding='utf-8-sig') as f:
-                writer = csv.writer(f)
-                writer.writerow(['التاريخ', 'الإجمالي', 'طريقة الدفع', 'نوع العملية', 'الهاتف'])
-                writer.writerows(data)
 
     def get_session_total_sales(self, session_id):
         if not session_id: return 0.0
