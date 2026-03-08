@@ -457,7 +457,7 @@ class ManagerPage(tk.Frame):
         for row in data:
             bill_id = row[0]
             b_date = row[1]
-            b_total = row[2]
+            b_total = float(row[2]) if row[2] else 0.0
             b_pay = row[3]
             b_type = row[4]
             
